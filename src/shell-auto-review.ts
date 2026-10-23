@@ -16,9 +16,16 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { uuidv7 } from "@earendil-works/pi-ai";
 
 type AnyModel = Model<Api>;
+
+/** 本地生成 v7 风格 sessionId，避免运行时依赖 @earendil-works/pi-ai */
+function newSessionId(): string {
+	return "xxxxxxxx-xxxx-7xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+		const r = (Math.random() * 16) | 0;
+		return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+	});
+}
 
 // ─── 1. 危险命令正则：命中即视为高风险 ─────────────────────────────
 const DENY_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
@@ -104,6 +111,11 @@ export default function (pi: ExtensionAPI) {
 
 	if (mode === "off") return;
 
+	// 启动自检通知：能看到这条说明扩展已加载
+	pi.on("session_start", (_event, ctx) => {
+		ctx.ui.notify(`shell-auto-review 已加载 (mode=${mode}, strict=${strict})`, "info");
+	});
+
 	// 结果缓存：同一命令字符串只审一次
 	const verdictCache = new Map<string, ReviewResult>();
 	let reviewModel: AnyModel | undefined;
@@ -183,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 								timestamp: Date.now(),
 							}],
 						},
-						{ maxTokens: 256, signal: ctx.signal, cacheRetention: "none", sessionId: uuidv7() },
+						{ maxTokens: 256, signal: ctx.signal, cacheRetention: "none", sessionId: newSessionId() },
 					);
 					const text = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
