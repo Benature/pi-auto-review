@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { uuidv7 } from "@earendil-works/pi-ai";
 
 type AnyModel = Model<Api>;
 
@@ -106,6 +107,7 @@ export default function (pi: ExtensionAPI) {
 	// 结果缓存：同一命令字符串只审一次
 	const verdictCache = new Map<string, ReviewResult>();
 	let reviewModel: AnyModel | undefined;
+	let lastError: string | undefined;
 
 	function resolveModel(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]): AnyModel | undefined {
 		if (reviewModel) return reviewModel;
@@ -167,6 +169,9 @@ export default function (pi: ExtensionAPI) {
 			const model = resolveModel(ctx);
 			if (!model) {
 				ctx.ui.notify("shell-review: 无可用模型，退回人工确认", "warning");
+			} else if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+				lastError = `模型 ${model.provider}/${model.id} 没有已配置的 API key`;
+				ctx.ui.notify(`shell-review: ${lastError}`, "warning");
 			} else {
 				try {
 					const response = await ctx.modelRegistry.complete(
@@ -178,23 +183,26 @@ export default function (pi: ExtensionAPI) {
 								timestamp: Date.now(),
 							}],
 						},
-						{ maxTokens: 128, cacheRetention: "none" },
+						{ maxTokens: 256, signal: ctx.signal, cacheRetention: "none", sessionId: uuidv7() },
 					);
 					const text = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text)
 						.join("");
 					result = parseReview(text);
+					if (!result) lastError = `LLM 返回无法解析: ${text.slice(0, 200)}`;
 				} catch (err) {
-					ctx.ui.notify(`shell-review LLM 调用失败: ${String(err)}`, "error");
+					lastError = err instanceof Error ? err.message : String(err);
+					ctx.ui.notify(`shell-review LLM 调用失败: ${lastError}`, "error");
 				}
 			}
 		}
 
 		if (!result) {
-			// LLM 失败 → 人工确认兜底
-			if (!ctx.hasUI) return { block: true, reason: "LLM review unavailable" };
-			const ok = await ctx.ui.confirm("shell-auto-review", `LLM 审查不可用，请人工确认:\n\n  ${command}`);
+			// LLM 失败 → 人工确认兜底，并带上真实原因
+			const detail = lastError ? `\n\n原因: ${lastError}` : "";
+			if (!ctx.hasUI) return { block: true, reason: `LLM review unavailable: ${lastError ?? "unknown"}` };
+			const ok = await ctx.ui.confirm("shell-auto-review", `LLM 审查不可用，请人工确认:${detail}\n\n  ${command}`);
 			if (!ok) return { block: true, reason: "User rejected (LLM unavailable)" };
 			return undefined;
 		}
