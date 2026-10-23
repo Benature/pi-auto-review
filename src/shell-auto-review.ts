@@ -19,6 +19,15 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 
 type AnyModel = Model<Api>;
 
+/** 诊断日志：审查过程和错误写入文件，便于直接排查 */
+import { appendFileSync } from "node:fs";
+const DEBUG_LOG = `${process.env.HOME}/.pi/agent/extensions/shell-review.log`;
+function dbg(msg: string): void {
+	try {
+		appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+	} catch { /* ignore */ }
+}
+
 /** 本地生成 v7 风格 sessionId，避免运行时依赖 @earendil-works/pi-ai */
 function newSessionId(): string {
 	return "xxxxxxxx-xxxx-7xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -147,6 +156,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName !== "bash") return undefined;
 		const command = (event.input.command as string | undefined) ?? "";
 		if (!command.trim()) return undefined;
+		dbg(`tool_call: ${JSON.stringify(command)}`);
 
 		// 一级：危险正则
 		for (const { pattern, reason } of DENY_PATTERNS) {
@@ -195,24 +205,32 @@ export default function (pi: ExtensionAPI) {
 								timestamp: Date.now(),
 							}],
 						},
-						{ maxTokens: 256, signal: ctx.signal, cacheRetention: "none", sessionId: newSessionId() },
+						{ maxTokens: 4096, signal: ctx.signal, cacheRetention: "none", sessionId: newSessionId(),
+							samplingParams: { reasoning_effort: "low" } as Record<string, unknown> },
 					);
 					const text = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text)
 						.join("");
-					result = parseReview(text);
+					// 推理模型可能只在 thinking 块里产出 JSON，兜底解析
+					const thinking = response.content
+						.filter((c): c is { type: "thinking"; thinking: string } => c.type === "thinking")
+						.map((c) => c.thinking)
+						.join("\n");
+					result = parseReview(text) ?? parseReview(thinking);
 					if (!result) {
 						const meta = {
 							stopReason: (response as { stopReason?: unknown }).stopReason,
 							blockTypes: response.content.map((c) => c.type),
 							rawText: text.slice(0, 300),
-							rawBlocks: JSON.stringify(response.content).slice(0, 500),
+							rawThinking: thinking.slice(0, 300),
 						};
 						lastError = `LLM 返回无法解析: ${JSON.stringify(meta)}`;
+						dbg(lastError);
 					}
 				} catch (err) {
 					lastError = err instanceof Error ? err.message : String(err);
+					dbg(`LLM exception: ${lastError}`);
 					ctx.ui.notify(`shell-review LLM 调用失败: ${lastError}`, "error");
 				}
 			}
@@ -230,6 +248,7 @@ export default function (pi: ExtensionAPI) {
 		verdictCache.set(command, result);
 
 		if (result.safe) {
+			dbg(`PASS: ${result.risk} — ${result.reason}`);
 			ctx.ui.notify(`shell-review ✓ ${result.risk} — ${result.reason}`, "info");
 			return undefined;
 		}
@@ -241,6 +260,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const ok = await ctx.ui.confirm("shell-auto-review", `${warning}\n\n仍要执行?`);
 		if (!ok) return { block: true, reason: `User rejected after LLM warning: ${result.reason}` };
+		dbg(`user-overrode LLM warning: ${result.reason}`);
 		return undefined;
 	});
 }
