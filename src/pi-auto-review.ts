@@ -8,10 +8,10 @@
  * 3. 其余命令 → 用便宜的小模型做 LLM 审查，返回 JSON 判定
  *
  * 配置（环境变量）：
- *   PI_SHELL_REVIEW_MODE    off | regex | llm   （默认 llm）
- *   PI_SHELL_REVIEW_MODEL   provider/model，如 "anthropic/claude-haiku-4-5"
+ *   PI_AUTO_REVIEW_MODE    off | regex | llm   （默认 llm）
+ *   PI_AUTO_REVIEW_MODEL   provider/model，如 "anthropic/claude-haiku-4-5"
  *                           不设置则依次尝试常见小模型，最后退回当前会话模型
- *   PI_SHELL_REVIEW_STRICT  1 = LLM 判定不安全时直接 block，0 = 弹确认（默认 0）
+ *   PI_AUTO_REVIEW_STRICT  1 = LLM 判定不安全时直接 block，0 = 弹确认（默认 0）
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,7 +21,7 @@ type AnyModel = Model<Api>;
 
 /** 诊断日志：审查过程和错误写入文件，便于直接排查 */
 import { appendFileSync } from "node:fs";
-const DEBUG_LOG = `${process.env.HOME}/.pi/agent/extensions/shell-review.log`;
+const DEBUG_LOG = `${process.env.HOME}/.pi/agent/extensions/pi-auto-review.log`;
 function dbg(msg: string): void {
 	try {
 		appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
@@ -115,14 +115,14 @@ function parseReview(text: string): ReviewResult | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
-	const mode = (process.env.PI_SHELL_REVIEW_MODE ?? "llm").toLowerCase();
-	const strict = process.env.PI_SHELL_REVIEW_STRICT === "1";
+	const mode = (process.env.PI_AUTO_REVIEW_MODE ?? "llm").toLowerCase();
+	const strict = process.env.PI_AUTO_REVIEW_STRICT === "1";
 
 	if (mode === "off") return;
 
 	// 启动自检通知：能看到这条说明扩展已加载
 	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.notify(`shell-auto-review 已加载 (mode=${mode}, strict=${strict})`, "info");
+		ctx.ui.notify(`pi-auto-review 已加载 (mode=${mode}, strict=${strict})`, "info");
 	});
 
 	// 结果缓存：同一命令字符串只审一次
@@ -130,9 +130,27 @@ export default function (pi: ExtensionAPI) {
 	let reviewModel: AnyModel | undefined;
 	let lastError: string | undefined;
 
+	/** 向 herdr 汇报提问状态（herdr-agent-state 扩展监听 herdr:blocked 事件） */
+	function herdrBlocked(active: boolean, label?: string): void {
+		try {
+			pi.events.emit("herdr:blocked", { active, label });
+		} catch { /* herdr 未安装时忽略 */ }
+	}
+
+	/** 弹确认框，同时给 herdr 反馈“等待用户回答”状态 */
+	async function confirmWithHerdr(ctx: Parameters<Parameters<typeof pi.on>[1]>[1], message: string): Promise<boolean> {
+		if (!ctx.hasUI) return false;
+		herdrBlocked(true, "pi-auto-review: 等待确认 shell 命令");
+		try {
+			return await ctx.ui.confirm("pi-auto-review", message);
+		} finally {
+			herdrBlocked(false);
+		}
+	}
+
 	function resolveModel(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]): AnyModel | undefined {
 		if (reviewModel) return reviewModel;
-		const explicit = process.env.PI_SHELL_REVIEW_MODEL;
+		const explicit = process.env.PI_AUTO_REVIEW_MODEL;
 		if (explicit) {
 			const [provider, ...rest] = explicit.split("/");
 			reviewModel = ctx.modelRegistry.find(provider, rest.join("/")) ?? undefined;
@@ -163,9 +181,9 @@ export default function (pi: ExtensionAPI) {
 			if (!pattern.test(command)) continue;
 			const msg = `⚠️ 危险命令（${reason}）:\n\n  ${command}\n\n允许执行?`;
 			if (!ctx.hasUI) {
-				return { block: true, reason: `Blocked by shell-auto-review: ${reason}` };
+				return { block: true, reason: `Blocked by pi-auto-review: ${reason}` };
 			}
-			const ok = await ctx.ui.confirm("shell-auto-review", msg);
+			const ok = await confirmWithHerdr(ctx, msg);
 			if (!ok) {
 				ctx.ui.notify("已阻止危险命令", "warning");
 				return { block: true, reason: `User rejected: ${reason}` };
@@ -178,7 +196,7 @@ export default function (pi: ExtensionAPI) {
 		if (mode === "regex") {
 			// 纯正则模式下，非安全即确认
 			if (!ctx.hasUI) return { block: true, reason: "Not in safe allowlist" };
-			const ok = await ctx.ui.confirm("shell-auto-review", `命令不在安全白名单中:\n\n  ${command}\n\n允许?`);
+			const ok = await confirmWithHerdr(ctx, `命令不在安全白名单中:\n\n  ${command}\n\n允许?`);
 			if (!ok) return { block: true, reason: "User rejected non-allowlisted command" };
 			return undefined;
 		}
@@ -240,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 			// LLM 失败 → 人工确认兜底，并带上真实原因
 			const detail = lastError ? `\n\n原因: ${lastError}` : "";
 			if (!ctx.hasUI) return { block: true, reason: `LLM review unavailable: ${lastError ?? "unknown"}` };
-			const ok = await ctx.ui.confirm("shell-auto-review", `LLM 审查不可用，请人工确认:${detail}\n\n  ${command}`);
+			const ok = await confirmWithHerdr(ctx, `LLM 审查不可用，请人工确认:${detail}\n\n  ${command}`);
 			if (!ok) return { block: true, reason: "User rejected (LLM unavailable)" };
 			return undefined;
 		}
@@ -258,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`shell-review ✗ 已阻止: ${result.reason}`, "warning");
 			return { block: true, reason: `LLM blocked: ${result.reason}` };
 		}
-		const ok = await ctx.ui.confirm("shell-auto-review", `${warning}\n\n仍要执行?`);
+		const ok = await confirmWithHerdr(ctx, `${warning}\n\n仍要执行?`);
 		if (!ok) return { block: true, reason: `User rejected after LLM warning: ${result.reason}` };
 		dbg(`user-overrode LLM warning: ${result.reason}`);
 		return undefined;
