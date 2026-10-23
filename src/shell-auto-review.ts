@@ -202,7 +202,15 @@ export default function (pi: ExtensionAPI) {
 						.map((c) => c.text)
 						.join("");
 					result = parseReview(text);
-					if (!result) lastError = `LLM 返回无法解析: ${text.slice(0, 200)}`;
+					if (!result) {
+						const meta = {
+							stopReason: (response as { stopReason?: unknown }).stopReason,
+							blockTypes: response.content.map((c) => c.type),
+							rawText: text.slice(0, 300),
+							rawBlocks: JSON.stringify(response.content).slice(0, 500),
+						};
+						lastError = `LLM 返回无法解析: ${JSON.stringify(meta)}`;
+					}
 				} catch (err) {
 					lastError = err instanceof Error ? err.message : String(err);
 					ctx.ui.notify(`shell-review LLM 调用失败: ${lastError}`, "error");
