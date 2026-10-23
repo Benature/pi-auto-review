@@ -8,10 +8,11 @@
  * 3. 其余命令 → 用便宜的小模型做 LLM 审查，返回 JSON 判定
  *
  * 配置（环境变量）：
- *   PI_AUTO_REVIEW_MODE    off | regex | llm   （默认 llm）
- *   PI_AUTO_REVIEW_MODEL   provider/model，如 "anthropic/claude-haiku-4-5"
- *                           不设置则依次尝试常见小模型，最后退回当前会话模型
- *   PI_AUTO_REVIEW_STRICT  1 = LLM 判定不安全时直接 block，0 = 弹确认（默认 0）
+ *   PI_AUTO_REVIEW_MODE       off | regex | llm   （默认 llm）
+ *   PI_AUTO_REVIEW_MODEL      provider/model，审查用模型（最高优先级）
+ *   PI_AUTO_REVIEW_FALLBACK   逗号分隔的 provider/model 回落列表
+ *                             （默认 anthropic/claude-haiku-4-5,google/gemini-2.5-flash,openai/gpt-4.1-mini）
+ *   PI_AUTO_REVIEW_STRICT     1 = LLM 判定不安全时直接 block，0 = 弹确认（默认 0）
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -157,11 +158,19 @@ export default function (pi: ExtensionAPI) {
 			if (!reviewModel) ctx.ui.notify(`shell-review: 找不到模型 ${explicit}，退回会话模型`, "warning");
 		}
 		if (!reviewModel) {
-			for (const [provider, id] of [
-				["anthropic", "claude-haiku-4-5"],
-				["google", "gemini-2.5-flash"],
-				["openai", "gpt-4.1-mini"],
-			] as const) {
+			// 回落列表可通过 PI_AUTO_REVIEW_FALLBACK 配置，逗号分隔 "provider/model"
+			const fallbackEnv = process.env.PI_AUTO_REVIEW_FALLBACK;
+			const fallbackList: Array<readonly [string, string]> = fallbackEnv
+				? fallbackEnv.split(",").map((entry) => {
+						const [provider = "", id = ""] = entry.trim().split("/");
+						return [provider, id] as const;
+					})
+				: ([
+					["anthropic", "claude-haiku-4-5"],
+					["google", "gemini-2.5-flash"],
+					["openai", "gpt-4.1-mini"],
+				] as const);
+			for (const [provider, id] of fallbackList) {
 				reviewModel = ctx.modelRegistry.find(provider, id) ?? undefined;
 				if (reviewModel) break;
 			}
