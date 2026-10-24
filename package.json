@@ -1,0 +1,37 @@
+{
+  "name": "pi-auto-review",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Regex and optional LLM review for Pi bash tool calls, with confirmation prompts and herdr state reporting.",
+  "license": "UNLICENSED",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "shell",
+    "review"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Benature/pi-auto-review.git"
+  },
+  "homepage": "https://github.com/Benature/pi-auto-review#readme",
+  "bugs": {
+    "url": "https://github.com/Benature/pi-auto-review/issues"
+  },
+  "files": [
+    "src/pi-auto-review.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi-auto-review.ts"
+    ]
+  }
+}
