@@ -9,9 +9,8 @@
  *
  * 配置（环境变量）：
  *   PI_AUTO_REVIEW_MODE       off | regex | llm   （默认 llm）
- *   PI_AUTO_REVIEW_MODEL      provider/model，审查用模型（最高优先级）
- *   PI_AUTO_REVIEW_FALLBACK   逗号分隔的 provider/model 回落列表
- *                             （默认 anthropic/claude-haiku-4-5,google/gemini-2.5-flash,openai/gpt-4.1-mini）
+ *   PI_AUTO_REVIEW_MODEL      provider/model，审查用模型（可选）
+ *                             不设置时自动从已配置的模型里选最便宜的（按 input+output 单价）
  *   PI_AUTO_REVIEW_STRICT     1 = LLM 判定不安全时直接 block，0 = 弹确认（默认 0）
  */
 
@@ -158,22 +157,13 @@ export default function (pi: ExtensionAPI) {
 			if (!reviewModel) ctx.ui.notify(`shell-review: 找不到模型 ${explicit}，退回会话模型`, "warning");
 		}
 		if (!reviewModel) {
-			// 回落列表可通过 PI_AUTO_REVIEW_FALLBACK 配置，逗号分隔 "provider/model"
-			const fallbackEnv = process.env.PI_AUTO_REVIEW_FALLBACK;
-			const fallbackList: Array<readonly [string, string]> = fallbackEnv
-				? fallbackEnv.split(",").map((entry) => {
-						const [provider = "", id = ""] = entry.trim().split("/");
-						return [provider, id] as const;
-					})
-				: ([
-					["anthropic", "claude-haiku-4-5"],
-					["google", "gemini-2.5-flash"],
-					["openai", "gpt-4.1-mini"],
-				] as const);
-			for (const [provider, id] of fallbackList) {
-				reviewModel = ctx.modelRegistry.find(provider, id) ?? undefined;
-				if (reviewModel) break;
-			}
+			// env 未设：从已配置（有可用凭证）的模型里选最便宜的，不硬编码任何模型名
+			const available = ctx.modelRegistry.getAvailable();
+			const priceOf = (m: AnyModel) => m.cost.input + m.cost.output; // USD per 百万 token，粗算即可
+			reviewModel = available.reduce<AnyModel | undefined>(
+				(best, m) => (best === undefined || priceOf(m) < priceOf(best) ? m : best),
+				undefined,
+			);
 		}
 		if (!reviewModel) reviewModel = ctx.model ?? undefined;
 		return reviewModel;
