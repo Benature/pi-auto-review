@@ -1,6 +1,7 @@
 {
   "name": "pi-auto-review",
   "version": "0.1.0",
+  "type": "module",
   "private": true,
   "description": "Regex and optional LLM review for Pi bash tool calls, with confirmation prompts and herdr state reporting.",
   "license": "UNLICENSED",
@@ -24,6 +25,9 @@
   ],
   "engines": {
     "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

@@ -133,7 +133,9 @@ PI_AUTO_REVIEW_MODEL='your-provider/your-model-id' PI_AUTO_REVIEW_STRICT=1 pi
 
 当前请求使用 `maxTokens: 4096`，并对适用的 OpenAI-compatible API 发送 `reasoning_effort: "low"`。**这不是关闭 thinking**，provider 的支持情况也不同。
 
-扩展先尝试解析 text 中的 `{ "safe": ..., "risk": ..., "reason": ... }`，再尝试 thinking 块中的 JSON。解析失败进入人工确认；这种宽松解析和 thinking 兜底不能视为严格的最终 verdict 验证。
+扩展先尝试解析 text 中的完整 `{ "safe": ..., "risk": ..., "reason": ... }`，再尝试 thinking 块中的 JSON。解析器兼容完整的 JSON 代码围栏，正确处理理由中的花括号、引号与转义；要求 `safe` 为布尔值、`risk` 为 `none`／`low`／`high`、`reason` 为非空字符串。
+
+不从解释性文字中截取局部 JSON，也不接受多个 verdict 或截断的对象；解析失败进入人工确认。thinking 兜底仍不能视为可靠的最终 verdict 验证。
 
 ## 验证
 
@@ -188,6 +190,10 @@ herdr 负责展示 blocked 状态和恢复工作状态。没有监听此事件�
 - **只拦截名为 `bash` 的 `tool_call`**，不覆盖用户直接输入的 `!`／`!!` 命令、`powershell`、`edit`／`write`、扩展直接启动的进程或全部 MCP 工具。
 - **不是完整 shell parser**：前缀、管道、子命令、参数、脚本和间接调用都可能导致误判或漏判。
 - **不是系统权限约束**：LLM 可能误判或受 prompt injection 影响；缓存也不跟踪文件和环境变化。需要强安全保证时，应使用容器／VM／OS sandbox 和最小权限。
+
+## 本地测试
+
+在仓库目录运行 `npm test`（Node.js 22.19+，无需安装额外依赖）。测试覆盖 JSON 理由中的花括号／转义、代码围栏、无效字段与截断输出，以及模拟 LLM 返回值的审核 hook；不会请求真实模型或执行被审核的 shell 命令。
 
 ## npm 发布
 

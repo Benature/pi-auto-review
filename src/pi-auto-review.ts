@@ -98,19 +98,28 @@ Command to review:
 %s
 ---`;
 
-interface ReviewResult {
+export interface ReviewResult {
 	safe: boolean;
 	risk: "none" | "low" | "high";
 	reason: string;
 }
 
-function parseReview(text: string): ReviewResult | undefined {
-	const match = text.match(/\{[^}]*"safe"[^}]*\}/);
-	if (!match) return undefined;
+/** Parse a complete verdict; braces inside JSON strings must never delimit it. */
+export function parseReview(text: string): ReviewResult | undefined {
+	const trimmed = text.trim();
+	const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
+	const payload = fenced ? fenced[1].trim() : trimmed;
 	try {
-		const obj = JSON.parse(match[0]) as ReviewResult;
-		if (typeof obj.safe === "boolean") return obj;
-	} catch { /* fall through */ }
+		const value: unknown = JSON.parse(payload);
+		if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const obj = value as Record<string, unknown>;
+		if (
+			typeof obj.safe !== "boolean" ||
+			(obj.risk !== "none" && obj.risk !== "low" && obj.risk !== "high") ||
+			typeof obj.reason !== "string" || !obj.reason.trim()
+		) return undefined;
+		return { safe: obj.safe, risk: obj.risk, reason: obj.reason };
+	} catch { /* Invalid or incomplete output must not become an approval. */ }
 	return undefined;
 }
 
