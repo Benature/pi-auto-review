@@ -137,6 +137,8 @@ PI_AUTO_REVIEW_MODEL='your-provider/your-model-id' PI_AUTO_REVIEW_STRICT=1 pi
 
 扩展先尝试解析 text 中的完整 `{ "safe": ..., "risk": ..., "reason": ... }`，再尝试 thinking 块中的 JSON。解析器兼容完整的 JSON 代码围栏，正确处理理由中的花括号、引号与转义；要求 `safe` 为布尔值、`risk` 为 `none`／`low`／`high`、`reason` 为非空字符串。
 
+只对 `stopReason: "stop"` 的正常完成响应解析 verdict。`stopReason: "error"` 的 provider 失败结果会显示模型和真实 `errorMessage`，不会再误报为 JSON 解析失败。失败或未完成响应不缓存、不自动放行，需人工确认；无 UI 时阻止。审核取消时直接阻止，不弹确认框。
+
 不从解释性文字中截取局部 JSON，也不接受多个 verdict 或截断的对象；解析失败进入人工确认。thinking 兜底仍不能视为可靠的最终 verdict 验证。
 
 ## 验证
@@ -188,7 +190,7 @@ herdr 负责展示 blocked 状态和恢复工作状态。没有监听此事件�
 ## 排障与安全边界
 
 - **修改源码**：`/reload` 会重载扩展。**修改 shell 环境变量**：需从已加载新环境的 shell 重新启动 Pi；`/reload` 不会重新读取 `.zshrc`，在子进程里 `export` 也不会修改 Pi 父进程的环境。
-- **审核不可用**：检查弹窗原因、模型是否在 Pi registry 中、认证是否配置、服务是否可达，以及返回是否只有 thinking 或被 token 上限截断。
+- **审核不可用**：区分 provider 请求失败与 JSON 解析失败。`stopReason=error` 时查看真实 `errorMessage`，核对认证、配额／限流、连接及上游故障；`stopReason=length` 表示 token 预算耗尽、审核未完成。只有正常完成但 JSON 格式无效的响应才显示“返回无法解析”。
 - **只拦截名为 `bash` 的 `tool_call`**，不覆盖用户直接输入的 `!`／`!!` 命令、`powershell`、`edit`／`write`、扩展直接启动的进程或全部 MCP 工具。
 - **不是完整 shell parser**：前缀、管道、子命令、参数、脚本和间接调用都可能导致误判或漏判。
 - **不是系统权限约束**：LLM 可能误判或受 prompt injection 影响；缓存也不跟踪文件和环境变化。需要强安全保证时，应使用容器／VM／OS sandbox 和最小权限。

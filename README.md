@@ -137,6 +137,8 @@ Requests currently use `maxTokens: 4096` and send `reasoning_effort: "low"` to a
 
 The extension first tries to parse a complete `{ "safe": ..., "risk": ..., "reason": ... }` from the text response, then tries JSON in the thinking blocks. The parser accepts a complete JSON code fence and correctly handles braces, quotes, and escapes in the reason. It requires a boolean `safe`, a `risk` of `none`, `low`, or `high`, and a nonempty string `reason`.
 
+Only responses with `stopReason: "stop"` are parsed as verdicts. Returned provider errors (`stopReason: "error"`) show the model and the provider's `errorMessage`, rather than being mislabeled as invalid JSON. Failed or unfinished responses are never cached or automatically approved; they require manual confirmation, or are blocked without a UI. Cancelled reviews are blocked without opening a confirmation prompt.
+
 It does not extract partial JSON from explanatory prose or accept multiple verdict objects or truncated JSON. Parse failures require manual confirmation. The thinking fallback still cannot be treated as reliable verification of a final verdict.
 
 ## Verification
@@ -188,7 +190,7 @@ Logs include **complete command strings**, LLM approval reasons, errors, and exc
 ## Troubleshooting and safety boundaries
 
 - **Source changes:** `/reload` reloads extensions. **Shell environment changes:** restart Pi from a shell that has loaded the new environment. `/reload` does not reread `.zshrc`, and `export` in a child process does not change the parent Pi process's environment.
-- **Review unavailable:** check the prompt's reason, whether the model exists in Pi's registry, authentication, service connectivity, and whether the output contains only thinking or was truncated by the token limit.
+- **Review unavailable:** distinguish a provider request failure from a JSON parse failure. For `stopReason=error`, check the displayed `errorMessage` for authentication, quota/rate-limit, connectivity, or upstream failures. For `stopReason=length`, the token budget was exhausted before review completed. Only normally finished responses with malformed JSON are reported as unparseable output.
 - **Only `tool_call` events named `bash` are intercepted.** This does not cover direct user `!` or `!!` commands, `powershell`, `edit` or `write`, processes launched directly by extensions, or all MCP tools.
 - **Not a complete shell parser:** prefixes, pipelines, substitutions, arguments, scripts, and indirect invocations can cause false positives or missed risks.
 - **Not an operating-system permission boundary:** LLMs can misjudge commands or be influenced by prompt injection. The cache does not track file or environment changes. Use containers, VMs, OS sandboxes, and least privilege when strong protection is required.

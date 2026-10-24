@@ -137,7 +137,6 @@ export default function (pi: ExtensionAPI) {
 	// 结果缓存：同一命令字符串只审一次
 	const verdictCache = new Map<string, ReviewResult>();
 	let reviewModel: AnyModel | undefined;
-	let lastError: string | undefined;
 
 	/** 向 herdr 汇报提问状态（herdr-agent-state 扩展监听 herdr:blocked 事件） */
 	function herdrBlocked(active: boolean, label?: string): void {
@@ -210,13 +209,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// 三级：LLM 审查
+		if (ctx.signal?.aborted) return { block: true, reason: "LLM 审查已取消" };
 		const cached = verdictCache.get(command);
 		let result: ReviewResult | undefined = cached;
+		// Failure details belong to this call, not a previous or concurrent review.
+		let lastError: string | undefined;
 
 		if (!result) {
 			const model = resolveModel(ctx);
 			if (!model) {
-				ctx.ui.notify("shell-review: 无可用模型，退回人工确认", "warning");
+				lastError = "无可用审核模型";
+				ctx.ui.notify(`shell-review: ${lastError}，退回人工确认`, "warning");
 			} else if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
 				lastError = `模型 ${model.provider}/${model.id} 没有已配置的 API key`;
 				ctx.ui.notify(`shell-review: ${lastError}`, "warning");
@@ -234,6 +237,22 @@ export default function (pi: ExtensionAPI) {
 						{ maxTokens: 4096, signal: ctx.signal, cacheRetention: "none", sessionId: newSessionId(),
 							samplingParams: { reasoning_effort: "low" } as Record<string, unknown> },
 					);
+					// Pi can resolve complete() with an error AssistantMessage instead of
+					// throwing. Never parse or cache partial approvals from failed requests.
+					if (response.stopReason === "aborted" || ctx.signal?.aborted) {
+						const reason = `LLM 审查已取消 (${model.provider}/${model.id})`;
+						dbg(reason);
+						return { block: true, reason };
+					}
+					if (response.stopReason === "error") {
+						const detail = response.errorMessage?.trim() || "provider 未提供错误详情";
+						throw new Error(`LLM 请求失败 (${model.provider}/${model.id}, stopReason=error): ${detail}`);
+					}
+					if (response.stopReason !== "stop") {
+						const detail = response.errorMessage?.trim() || (response.stopReason === "length"
+							? "输出达到 token 上限，审核未完成" : "未收到正常完成的审核结果");
+						throw new Error(`LLM 审查未完成 (${model.provider}/${model.id}, stopReason=${response.stopReason}): ${detail}`);
+					}
 					const text = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text)
@@ -246,7 +265,8 @@ export default function (pi: ExtensionAPI) {
 					result = parseReview(text) ?? parseReview(thinking);
 					if (!result) {
 						const meta = {
-							stopReason: (response as { stopReason?: unknown }).stopReason,
+							model: `${model.provider}/${model.id}`,
+							stopReason: response.stopReason,
 							blockTypes: response.content.map((c) => c.type),
 							rawText: text.slice(0, 300),
 							rawThinking: thinking.slice(0, 300),
@@ -255,6 +275,11 @@ export default function (pi: ExtensionAPI) {
 						dbg(lastError);
 					}
 				} catch (err) {
+					if (ctx.signal?.aborted) {
+						const reason = `LLM 审查已取消 (${model.provider}/${model.id})`;
+						dbg(reason);
+						return { block: true, reason };
+					}
 					lastError = err instanceof Error ? err.message : String(err);
 					dbg(`LLM exception: ${lastError}`);
 					ctx.ui.notify(`shell-review LLM 调用失败: ${lastError}`, "error");
@@ -263,6 +288,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (!result) {
+			if (ctx.signal?.aborted) return { block: true, reason: "LLM 审查已取消" };
 			// LLM 失败 → 人工确认兜底，并带上真实原因
 			const detail = lastError ? `\n\n原因: ${lastError}` : "";
 			if (!ctx.hasUI) return { block: true, reason: `LLM review unavailable: ${lastError ?? "unknown"}` };
