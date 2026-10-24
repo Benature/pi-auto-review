@@ -91,7 +91,7 @@ const REVIEW_PROMPT = `You are a strict shell command safety reviewer. Evaluate 
 - excessive scope (wildcards, recursive deletes, broad globs)
 
 Reply with ONLY a JSON object on one line, no markdown fences:
-{"safe": true|false, "risk": "none"|"low"|"high", "reason": "one short sentence"}
+{"safe": true|false, "risk": "none"|"low"|"medium"|"high", "reason": "one short sentence"}
 
 Command to review:
 ---
@@ -100,7 +100,7 @@ Command to review:
 
 export interface ReviewResult {
 	safe: boolean;
-	risk: "none" | "low" | "high";
+	risk: "none" | "low" | "medium" | "high";
 	reason: string;
 }
 
@@ -115,7 +115,7 @@ export function parseReview(text: string): ReviewResult | undefined {
 		const obj = value as Record<string, unknown>;
 		if (
 			typeof obj.safe !== "boolean" ||
-			(obj.risk !== "none" && obj.risk !== "low" && obj.risk !== "high") ||
+			(obj.risk !== "none" && obj.risk !== "low" && obj.risk !== "medium" && obj.risk !== "high") ||
 			typeof obj.reason !== "string" || !obj.reason.trim()
 		) return undefined;
 		return { safe: obj.safe, risk: obj.risk, reason: obj.reason };

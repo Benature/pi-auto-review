@@ -30,6 +30,7 @@ const validCases = [
   ["reported reason containing finish({keep:[]})", reportedVerdict],
   ["safe verdict", { safe: true, risk: "none", reason: "Read-only inspection." }],
   ["unsafe verdict", { safe: false, risk: "high", reason: "Deletes project files." }],
+  ["medium-risk verdict", { safe: false, risk: "medium", reason: "Reading remote configuration can expose secrets and personal data." }],
   ["nested braces inside reason", { safe: true, risk: "low", reason: 'Reads {"outer":{"items":[]}} and prints it.' }],
   ["unbalanced braces inside a JSON string", { safe: true, risk: "low", reason: "Prints } first, then {; both are literal text." }],
   ["escaped quotes, backslashes and braces", { safe: true, risk: "low", reason: 'Prints "quoted {text}" at C:\\tmp\\; no mutation.' }],
@@ -71,7 +72,8 @@ const invalidCases = [
   ["string safe", JSON.stringify({ safe: "true", risk: "low", reason: "Unknown operation." })],
   ["numeric safe", JSON.stringify({ safe: 1, risk: "low", reason: "Unknown operation." })],
   ["missing risk", JSON.stringify({ safe: true, reason: "Unknown operation." })],
-  ["invalid risk", JSON.stringify({ safe: true, risk: "medium", reason: "Unknown operation." })],
+  ["invalid risk", JSON.stringify({ safe: true, risk: "critical", reason: "Unknown operation." })],
+  ["mixed-case risk", JSON.stringify({ safe: false, risk: "Medium", reason: "Unknown operation." })],
   ["non-string risk", JSON.stringify({ safe: true, risk: 0, reason: "Unknown operation." })],
   ["missing reason", JSON.stringify({ safe: true, risk: "low" })],
   ["blank reason", JSON.stringify({ safe: true, risk: "low", reason: " \n\t" })],
@@ -120,6 +122,7 @@ function createHarness({ content, hasUI = true, confirm = async () => false }) {
   const events = [];
   const notifications = [];
   const confirmations = [];
+  const requests = [];
   let completions = 0;
   const model = { provider: "test-provider", id: "test-model", cost: { input: 1, output: 1 } };
   registerExtension({
@@ -139,8 +142,9 @@ function createHarness({ content, hasUI = true, confirm = async () => false }) {
     modelRegistry: {
       getAvailable() { return [model]; },
       hasConfiguredAuth() { return true; },
-      async complete() {
+      async complete(_model, context) {
         completions += 1;
+        requests.push(context);
         return { stopReason: "stop", content };
       },
     },
@@ -149,6 +153,7 @@ function createHarness({ content, hasUI = true, confirm = async () => false }) {
     events,
     notifications,
     confirmations,
+    requests,
     get completions() { return completions; },
     review(command = "fixture-tool inspect") {
       return handlers.get("tool_call")({ toolName: "bash", input: { command } }, ctx);
@@ -223,6 +228,68 @@ test("hook keeps the existing complete thinking-JSON fallback", async () => {
   await withReviewEnvironment({}, async () => {
     const harness = createHarness({ content: [{ type: "thinking", thinking: plainJson }] });
     assert.equal(await harness.review(), undefined);
+    assert.equal(harness.confirmations.length, 0);
+  });
+});
+
+const mediumVerdict = {
+  safe: false,
+  risk: "medium",
+  reason: "Reading remote configuration can expose secrets and personal data.",
+};
+
+test("hook treats medium risk as an unsafe verdict, not unavailable review", async () => {
+  await withReviewEnvironment({}, async () => {
+    const harness = createHarness({ content: [{ type: "text", text: JSON.stringify(mediumVerdict) }] });
+    const result = await harness.review();
+    assert.equal(result.block, true);
+    assert.match(result.reason, /User rejected after LLM warning/);
+    assert.equal(harness.confirmations.length, 1);
+    const message = harness.confirmations[0].message;
+    assert.match(message, /LLM 判定有风险 \(medium\)/);
+    assert.ok(message.includes(mediumVerdict.reason));
+    assert.doesNotMatch(message, /审查不可用|返回无法解析/);
+    assert.deepEqual(harness.events.map(({ data }) => data.active), [true, false]);
+    assert.ok(harness.requests[0].messages[0].content[0].text.includes('"medium"'), "Prompt must advertise the accepted risk level");
+  });
+});
+
+test("medium-risk approval still requires a user answer on every cached attempt", async () => {
+  await withReviewEnvironment({}, async () => {
+    const answers = [true, false];
+    const harness = createHarness({
+      content: [{ type: "text", text: JSON.stringify(mediumVerdict) }],
+      confirm: async () => answers.shift(),
+    });
+    assert.equal(await harness.review(), undefined, "An explicit user approval may allow the command");
+    const rejected = await harness.review();
+    assert.equal(rejected.block, true);
+    assert.match(rejected.reason, /User rejected after LLM warning/);
+    assert.equal(harness.completions, 1, "Reuse the verdict, not the user's approval");
+    assert.equal(harness.confirmations.length, 2);
+    assert.deepEqual(harness.events.map(({ data }) => data.active), [true, false, true, false]);
+    assert.ok(!harness.notifications.some(({ message }) => message.startsWith("shell-review ✓")));
+  });
+});
+
+test("hook blocks unsafe medium risk in STRICT mode without asking", async () => {
+  await withReviewEnvironment({ PI_AUTO_REVIEW_STRICT: "1" }, async () => {
+    const harness = createHarness({ content: [{ type: "text", text: JSON.stringify(mediumVerdict) }] });
+    const result = await harness.review();
+    assert.equal(result.block, true);
+    assert.match(result.reason, /LLM blocked/);
+    assert.equal(harness.confirmations.length, 0);
+    assert.equal(harness.events.length, 0);
+  });
+});
+
+test("hook blocks unsafe medium risk without UI", async () => {
+  await withReviewEnvironment({}, async () => {
+    const harness = createHarness({ content: [{ type: "text", text: JSON.stringify(mediumVerdict) }], hasUI: false });
+    const result = await harness.review();
+    assert.equal(result.block, true);
+    assert.match(result.reason, /LLM blocked/);
+    assert.doesNotMatch(result.reason, /review unavailable/);
     assert.equal(harness.confirmations.length, 0);
   });
 });

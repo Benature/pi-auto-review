@@ -135,7 +135,7 @@ For built-in providers, Pi's `/login` can also configure authentication. See the
 
 Requests currently use `maxTokens: 4096` and send `reasoning_effort: "low"` to applicable OpenAI-compatible APIs. **This does not disable thinking**, and provider support varies.
 
-The extension first tries to parse a complete `{ "safe": ..., "risk": ..., "reason": ... }` from the text response, then tries JSON in the thinking blocks. The parser accepts a complete JSON code fence and correctly handles braces, quotes, and escapes in the reason. It requires a boolean `safe`, a `risk` of `none`, `low`, or `high`, and a nonempty string `reason`.
+The extension first tries to parse a complete `{ "safe": ..., "risk": ..., "reason": ... }` from the text response, then tries JSON in the thinking blocks. The parser accepts a complete JSON code fence and correctly handles braces, quotes, and escapes in the reason. It requires a boolean `safe`, a `risk` of `none`, `low`, `medium`, or `high`, and a nonempty string `reason`.
 
 Only responses with `stopReason: "stop"` are parsed as verdicts. Returned provider errors (`stopReason: "error"`) show the model and the provider's `errorMessage`, rather than being mislabeled as invalid JSON. Failed or unfinished responses are never cached or automatically approved; they require manual confirmation, or are blocked without a UI. Cancelled reviews are blocked without opening a confirmation prompt.
 

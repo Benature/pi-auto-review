@@ -135,7 +135,7 @@ PI_AUTO_REVIEW_MODEL='your-provider/your-model-id' PI_AUTO_REVIEW_STRICT=1 pi
 
 当前请求使用 `maxTokens: 4096`，并对适用的 OpenAI-compatible API 发送 `reasoning_effort: "low"`。**这不是关闭 thinking**，provider 的支持情况也不同。
 
-扩展先尝试解析 text 中的完整 `{ "safe": ..., "risk": ..., "reason": ... }`，再尝试 thinking 块中的 JSON。解析器兼容完整的 JSON 代码围栏，正确处理理由中的花括号、引号与转义；要求 `safe` 为布尔值、`risk` 为 `none`／`low`／`high`、`reason` 为非空字符串。
+扩展先尝试解析 text 中的完整 `{ "safe": ..., "risk": ..., "reason": ... }`，再尝试 thinking 块中的 JSON。解析器兼容完整的 JSON 代码围栏，正确处理理由中的花括号、引号与转义；要求 `safe` 为布尔值、`risk` 为 `none`／`low`／`medium`／`high`、`reason` 为非空字符串。
 
 只对 `stopReason: "stop"` 的正常完成响应解析 verdict。`stopReason: "error"` 的 provider 失败结果会显示模型和真实 `errorMessage`，不会再误报为 JSON 解析失败。失败或未完成响应不缓存、不自动放行，需人工确认；无 UI 时阻止。审核取消时直接阻止，不弹确认框。
 
