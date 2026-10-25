@@ -56,7 +56,7 @@ Pi loads TypeScript directly; no build step is needed. **Use only one loading me
 - The allowlist includes `ls`, `pwd`, `grep`, and `git status`, but also commands whose arguments can have side effects. An allowlist match **does not prove that a command is read-only**.
 - In `regex` mode, no review LLM is called. Commands matching neither risk patterns nor the allowlist also require confirmation.
 - In `off` mode, no review handler is registered; all checks and notifications above are disabled.
-- LLM verdicts are cached in extension memory by the complete command string. Repeated commands reuse the verdict, but unsafe results still follow the confirmation or blocking policy. The cache is not persisted and is cleared on reload.
+- LLM verdicts are cached in extension memory by the complete command string, working directory, and inspected script fingerprint. Changed script source or cwd triggers a new review. A detected script without a complete preview is not cached; unsafe verdicts still follow the confirmation or blocking policy. The cache is not persisted and is cleared on reload.
 
 ## Configuration
 
@@ -67,6 +67,7 @@ All extension settings come from the Pi **process environment**. Personal endpoi
 | `PI_AUTO_REVIEW_MODE` | `llm` | `llm`: regex + LLM; `regex`: regex and manual confirmation only; `off`: disabled |
 | `PI_AUTO_REVIEW_MODEL` | Unset | A registered Pi `provider/model-id`; selected automatically when unset |
 | `PI_AUTO_REVIEW_STRICT` | `0` | Set to `1` to block an unsafe LLM verdict without allowing a manual override |
+| `PI_AUTO_REVIEW_SCRIPT_PREVIEW` | `1` | Set to `0` to withhold local script source from the review model; command review stays enabled |
 
 **`STRICT` only affects unsafe LLM verdicts.** It does not prevent manual approval of commands matching risk patterns or manual confirmation when review is unavailable. It is not a global “block all risks” switch.
 
@@ -131,6 +132,24 @@ This example contains placeholders only. Merge it into your existing `providers`
 
 For built-in providers, Pi's `/login` can also configure authentication. See the [Pi model configuration documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) for more fields.
 
+### Reducing unnecessary prompts
+
+The review policy distinguishes **receiving public data** from **executing downloaded code or sending private data**. Ordinary GET/HEAD requests, downloads to project/temporary files, and read-only inspection should normally be assessed as low risk—not flagged just because they use the network. High-risk judgments should cite concrete destructive, privilege, persistence, or data-exfiltration behavior. This is model guidance, not an unconditional allow rule: `curl` and `wget` are not blanket-allowlisted.
+
+For a simple direct invocation such as `python3 ~/Downloads/download.py`, the extension can supply **complete local script source, up to 16 KiB**, so the model judges what the script actually does instead of assuming every unknown script is dangerous:
+
+- Only literal, single-command paths under the working directory or `~/Downloads` are inspected. Supported extensions are `.sh`, `.bash`, `.zsh`, `.py`, `.js`, `.mjs`, `.cjs`, `.ts`, and `.ps1` with common interpreter invocations or explicit executable paths.
+- No script is executed, imports followed, or remote source fetched. Multiline commands, composition, substitutions, unsupported options, and remote execution are not resolved.
+- Binary, oversized, unreadable, out-of-scope, credential-looking paths, or sources containing recognized literal credential patterns are withheld. Oversized files are **not** sent as potentially misleading partial previews.
+- Script paths and comments are untrusted evidence, not instructions or proof of safety. An unknown script without source remains a meaningful uncertainty; dangerous scripts still require confirmation.
+- The inspected source hash participates in the cache key. This is not an execution lock: script changes between review and execution, imported code, and environment changes remain outside its guarantee.
+
+**Privacy:** source preview can send local project code to the configured review provider. Credential-pattern checks are best-effort, not comprehensive redaction. Disable this if source must not leave the machine:
+
+```bash
+PI_AUTO_REVIEW_SCRIPT_PREVIEW=0 pi
+```
+
 ### Review requests and thinking
 
 Requests currently use `maxTokens: 4096` and send `reasoning_effort: "low"` to applicable OpenAI-compatible APIs. **This does not disable thinking**, and provider support varies.
@@ -185,7 +204,7 @@ Logs include **complete command strings**, LLM approval reasons, errors, and exc
 - The log path is currently fixed and does not follow `PI_CODING_AGENT_DIR`.
 - Writes are silently skipped if the directory does not exist or is not writable.
 - There is no independent logging switch; `MODE=off` disables the entire review extension.
-- LLM review sends the command to the selected provider. `regex` mode avoids this additional review request but does not change how Pi's main conversation model processes data.
+- LLM review sends the command, working directory, and any enabled script preview to the selected provider. `PI_AUTO_REVIEW_SCRIPT_PREVIEW=0` withholds script source; `regex` mode avoids the entire additional review request. Neither changes how Pi's main conversation model processes data.
 
 ## Troubleshooting and safety boundaries
 
@@ -193,11 +212,11 @@ Logs include **complete command strings**, LLM approval reasons, errors, and exc
 - **Review unavailable:** distinguish a provider request failure from a JSON parse failure. For `stopReason=error`, check the displayed `errorMessage` for authentication, quota/rate-limit, connectivity, or upstream failures. For `stopReason=length`, the token budget was exhausted before review completed. Only normally finished responses with malformed JSON are reported as unparseable output.
 - **Only `tool_call` events named `bash` are intercepted.** This does not cover direct user `!` or `!!` commands, `powershell`, `edit` or `write`, processes launched directly by extensions, or all MCP tools.
 - **Not a complete shell parser:** prefixes, pipelines, substitutions, arguments, scripts, and indirect invocations can cause false positives or missed risks.
-- **Not an operating-system permission boundary:** LLMs can misjudge commands or be influenced by prompt injection. The cache does not track file or environment changes. Use containers, VMs, OS sandboxes, and least privilege when strong protection is required.
+- **Not an operating-system permission boundary:** LLMs can misjudge commands or be influenced by prompt injection. Preview hashes only track the directly inspected script, not imports, runtime state, or file changes after review. Use containers, VMs, OS sandboxes, and least privilege when strong protection is required.
 
 ## Local tests
 
-Run `npm test` from the repository (Node.js 22.19+, no additional dependencies required). Tests cover braces and escapes in JSON reasons, code fences, invalid fields, truncated output, and review hooks with mocked LLM responses. They do not call real models or execute reviewed shell commands.
+Run `npm test` from the repository (Node.js 22.19+, no additional dependencies required). Tests cover JSON verdict parsing, provider error states, script preview scope/privacy limits, fingerprinted caching, and review hooks with mocked LLM responses. They do not call real models or execute reviewed shell commands.
 
 ## npm publication
 

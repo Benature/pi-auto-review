@@ -21,7 +21,7 @@ after(() => rmSync(testHome, { recursive: true, force: true }));
 const approval = JSON.stringify({ safe: true, risk: "low", reason: "Inspects fixture data." });
 
 async function withReviewEnvironment(callback) {
-  const values = { PI_AUTO_REVIEW_MODE: "llm", PI_AUTO_REVIEW_MODEL: undefined, PI_AUTO_REVIEW_STRICT: "0" };
+  const values = { PI_AUTO_REVIEW_MODE: "llm", PI_AUTO_REVIEW_MODEL: undefined, PI_AUTO_REVIEW_STRICT: "0", PI_AUTO_REVIEW_SCRIPT_PREVIEW: "0" };
   const saved = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined) delete process.env[key];

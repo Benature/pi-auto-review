@@ -100,6 +100,7 @@ async function withReviewEnvironment(overrides, callback) {
     PI_AUTO_REVIEW_MODE: "llm",
     PI_AUTO_REVIEW_MODEL: undefined,
     PI_AUTO_REVIEW_STRICT: "0",
+    PI_AUTO_REVIEW_SCRIPT_PREVIEW: "0",
     ...overrides,
   };
   const saved = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -250,7 +251,7 @@ test("hook treats medium risk as an unsafe verdict, not unavailable review", asy
     assert.ok(message.includes(mediumVerdict.reason));
     assert.doesNotMatch(message, /审查不可用|返回无法解析/);
     assert.deepEqual(harness.events.map(({ data }) => data.active), [true, false]);
-    assert.ok(harness.requests[0].messages[0].content[0].text.includes('"medium"'), "Prompt must advertise the accepted risk level");
+    assert.ok(harness.requests[0].systemPrompt.includes('"medium"'), "Prompt must advertise the accepted risk level");
   });
 });
 
