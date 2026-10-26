@@ -15,7 +15,7 @@
  *   PI_AUTO_REVIEW_SCRIPT_PREVIEW  0 = 不向审核模型提供本地脚本源码（默认 1）
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
@@ -260,21 +260,123 @@ export function parseReview(text: string): ReviewResult | undefined {
 	return undefined;
 }
 
+export const REVIEW_CHOICES = [
+	"拒绝执行",
+	"仅允许本次",
+	"本 session 全部放行（关闭正则和 LLM 审核）",
+] as const;
+export const SESSION_BYPASS_ENTRY = "pi-auto-review.session-bypass";
+
 export default function (pi: ExtensionAPI) {
 	const mode = (process.env.PI_AUTO_REVIEW_MODE ?? "llm").toLowerCase();
 	const strict = process.env.PI_AUTO_REVIEW_STRICT === "1";
 	const scriptPreviewEnabled = process.env.PI_AUTO_REVIEW_SCRIPT_PREVIEW !== "0";
 
-	if (mode === "off") return;
-
-	// 启动自检通知：能看到这条说明扩展已加载
-	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.notify(`pi-auto-review 已加载 (mode=${mode}, strict=${strict})`, "info");
-	});
-
 	// Cache verdicts by command, cwd and inspected script fingerprint.
 	const verdictCache = new Map<string, ReviewResult>();
 	let reviewModel: AnyModel | undefined;
+	let activeSessionId: string | undefined;
+	let sessionBypass = false;
+	let confirmationQueue = Promise.resolve();
+
+	function restoreSessionState(ctx: ExtensionContext, force = false): string {
+		const id = ctx.sessionManager.getSessionId();
+		if (!force && activeSessionId === id) return id;
+		activeSessionId = id;
+		sessionBypass = false;
+		verdictCache.clear();
+		reviewModel = undefined;
+		// This is a session-wide operator setting, not branch-relative model state.
+		// The owning ID prevents copied fork/clone entries from granting a bypass.
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "custom" || entry.customType !== SESSION_BYPASS_ENTRY) continue;
+			if (!entry.data || typeof entry.data !== "object") continue;
+			const data = entry.data as Record<string, unknown>;
+			if (data.version === 1 && data.sessionId === id && typeof data.bypass === "boolean") {
+				sessionBypass = data.bypass;
+			}
+		}
+		return id;
+	}
+
+	function updateBypassStatus(ctx: ExtensionContext): void {
+		ctx.ui.setStatus("pi-auto-review", sessionBypass ? "⚠ auto-review OFF (session)" : undefined);
+	}
+
+	function setSessionBypass(ctx: ExtensionContext, bypass: boolean, expectedId: string): boolean {
+		if (activeSessionId !== expectedId || ctx.sessionManager.getSessionId() !== expectedId) return false;
+		restoreSessionState(ctx);
+		if (sessionBypass !== bypass) {
+			// Re-enabling review is fail-safe even when session persistence fails.
+			if (!bypass) sessionBypass = false;
+			try {
+				pi.appendEntry(SESSION_BYPASS_ENTRY, { version: 1, sessionId: expectedId, bypass });
+			} catch {
+				updateBypassStatus(ctx);
+				ctx.ui.notify(bypass ? "无法保存本 session 开关，保持审核开启。"
+					: "当前已恢复审核，但开关保存失败；重载后请用 /auto-review status 核对。", "error");
+				return false;
+			}
+			sessionBypass = bypass;
+			verdictCache.clear();
+		}
+		updateBypassStatus(ctx);
+		ctx.ui.notify(bypass
+			? "pi-auto-review：本 session 已全部放行（含危险正则）；/auto-review on 恢复审核"
+			: "pi-auto-review：本 session 已恢复审核", bypass ? "warning" : "info");
+		return true;
+	}
+
+	function reviewGate(ctx: ExtensionContext, ownerId: string): ToolCallEventResult | "bypass" | undefined {
+		if (ctx.signal?.aborted) return { block: true, reason: "LLM 审查已取消" };
+		if (activeSessionId !== ownerId || ctx.sessionManager.getSessionId() !== ownerId) return { block: true, reason: "审核所属 session 已切换" };
+		restoreSessionState(ctx);
+		return sessionBypass ? "bypass" : undefined;
+	}
+
+	pi.registerCommand("auto-review", {
+		description: "Toggle review for this session: /auto-review [on|off|toggle|status]",
+		getArgumentCompletions: (prefix) => {
+			const matches = ["on", "off", "toggle", "status"].filter(value => value.startsWith(prefix));
+			return matches.length ? matches.map(value => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			const action = args.trim().toLowerCase() || "toggle";
+			if (!["on", "off", "toggle", "status"].includes(action)) {
+				ctx.ui.notify("用法：/auto-review [on|off|toggle|status]（无参数切换）", "warning");
+				return;
+			}
+			if (mode === "off") {
+				ctx.ui.notify("PI_AUTO_REVIEW_MODE=off 已全局关闭审核；请改为 llm 或 regex 并重启 Pi。", "warning");
+				return;
+			}
+			const id = restoreSessionState(ctx);
+			if (action === "status") {
+				updateBypassStatus(ctx);
+				ctx.ui.notify(sessionBypass ? "pi-auto-review：本 session 全部放行（审核 OFF）"
+					: `pi-auto-review：审核 ON (mode=${mode}, strict=${strict})`, sessionBypass ? "warning" : "info");
+				return;
+			}
+			setSessionBypass(ctx, action === "off" ? true : action === "on" ? false : !sessionBypass, id);
+		},
+	});
+
+	if (mode === "off") return;
+
+	pi.on("session_shutdown", () => {
+		// Old async handlers must not change state after reload/session replacement.
+		activeSessionId = undefined;
+		sessionBypass = false;
+		verdictCache.clear();
+	});
+
+	pi.on("session_start", (_event, ctx) => {
+		restoreSessionState(ctx, true);
+		updateBypassStatus(ctx);
+		ctx.ui.notify(sessionBypass
+			? "pi-auto-review 已加载；本 session 全部放行（/auto-review on 恢复审核）"
+			: `pi-auto-review 已加载 (mode=${mode}, strict=${strict})`, sessionBypass ? "warning" : "info");
+	});
 
 	/** 向 herdr 汇报提问状态（herdr-agent-state 扩展监听 herdr:blocked 事件） */
 	function herdrBlocked(active: boolean, label?: string): void {
@@ -283,18 +385,33 @@ export default function (pi: ExtensionAPI) {
 		} catch { /* herdr 未安装时忽略 */ }
 	}
 
-	/** 弹确认框，同时给 herdr 反馈“等待用户回答”状态 */
-	async function confirmWithHerdr(ctx: Parameters<Parameters<typeof pi.on>[1]>[1], message: string): Promise<boolean> {
-		if (!ctx.hasUI) return false;
-		herdrBlocked(true, "pi-auto-review: 等待确认 shell 命令");
+	/** Serialize selectors; a session bypass skips queued prompts too. */
+	async function confirmWithHerdr(ctx: ExtensionContext, message: string): Promise<boolean> {
+		const ownerId = restoreSessionState(ctx);
+		const previous = confirmationQueue;
+		let release!: () => void;
+		confirmationQueue = new Promise<void>(resolve => { release = resolve; });
+		await previous;
 		try {
-			return await ctx.ui.confirm("pi-auto-review", message);
+			const gate = reviewGate(ctx, ownerId);
+			if (gate) return gate === "bypass";
+			if (!ctx.hasUI) return false;
+			herdrBlocked(true, "pi-auto-review: 等待确认 shell 命令");
+			try {
+				const choice = await ctx.ui.select(`pi-auto-review\n\n${message}`, [...REVIEW_CHOICES], { signal: ctx.signal });
+				const afterGate = reviewGate(ctx, ownerId);
+				if (afterGate) return afterGate === "bypass";
+				if (choice === REVIEW_CHOICES[2]) return setSessionBypass(ctx, true, ownerId);
+				return choice === REVIEW_CHOICES[1];
+			} finally {
+				herdrBlocked(false);
+			}
 		} finally {
-			herdrBlocked(false);
+			release();
 		}
 	}
 
-	function resolveModel(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]): AnyModel | undefined {
+	function resolveModel(ctx: ExtensionContext): AnyModel | undefined {
 		if (reviewModel) return reviewModel;
 		const explicit = process.env.PI_AUTO_REVIEW_MODEL;
 		if (explicit) {
@@ -317,6 +434,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
+		const ownerId = restoreSessionState(ctx);
+		const initialGate = reviewGate(ctx, ownerId);
+		if (initialGate) return initialGate === "bypass" ? undefined : initialGate;
 		const command = (event.input.command as string | undefined) ?? "";
 		if (!command.trim()) return undefined;
 		dbg(`tool_call: ${JSON.stringify(command)}`);
@@ -351,7 +471,8 @@ export default function (pi: ExtensionAPI) {
 		const cwd = ctx.cwd ?? "";
 		const preview = scriptPreviewEnabled
 			? await collectScriptPreview(command, cwd, process.env.HOME) : undefined;
-		if (ctx.signal?.aborted) return { block: true, reason: "LLM 审查已取消" };
+		const previewGate = reviewGate(ctx, ownerId);
+		if (previewGate) return previewGate === "bypass" ? undefined : previewGate;
 		const cacheKey = JSON.stringify([cwd, command, preview?.status, preview?.sha256, preview?.reason]);
 		// A detected script without a complete snapshot cannot be fingerprinted.
 		const cacheable = !preview || preview.status === "available";
@@ -383,6 +504,8 @@ export default function (pi: ExtensionAPI) {
 						{ maxTokens: 4096, signal: ctx.signal, cacheRetention: "none", sessionId: newSessionId(),
 							samplingParams: { reasoning_effort: "low" } as Record<string, unknown> },
 					);
+					const responseGate = reviewGate(ctx, ownerId);
+					if (responseGate) return responseGate === "bypass" ? undefined : responseGate;
 					// Pi can resolve complete() with an error AssistantMessage instead of
 					// throwing. Never parse or cache partial approvals from failed requests.
 					if (response.stopReason === "aborted" || ctx.signal?.aborted) {
@@ -421,11 +544,8 @@ export default function (pi: ExtensionAPI) {
 						dbg(lastError);
 					}
 				} catch (err) {
-					if (ctx.signal?.aborted) {
-						const reason = `LLM 审查已取消 (${model.provider}/${model.id})`;
-						dbg(reason);
-						return { block: true, reason };
-					}
+					const errorGate = reviewGate(ctx, ownerId);
+					if (errorGate) return errorGate === "bypass" ? undefined : errorGate;
 					lastError = err instanceof Error ? err.message : String(err);
 					dbg(`LLM exception: ${lastError}`);
 					ctx.ui.notify(`shell-review LLM 调用失败: ${lastError}`, "error");
@@ -434,7 +554,8 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (!result) {
-			if (ctx.signal?.aborted) return { block: true, reason: "LLM 审查已取消" };
+			const fallbackGate = reviewGate(ctx, ownerId);
+			if (fallbackGate) return fallbackGate === "bypass" ? undefined : fallbackGate;
 			// LLM 失败 → 人工确认兜底，并带上真实原因
 			const detail = lastError ? `\n\n原因: ${lastError}` : "";
 			if (!ctx.hasUI) return { block: true, reason: `LLM review unavailable: ${lastError ?? "unknown"}` };

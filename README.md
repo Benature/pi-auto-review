@@ -47,6 +47,7 @@ Pi loads TypeScript directly; no build step is needed. **Use only one loading me
 
 | Stage | Condition | Behavior |
 | --- | --- | --- |
+| Session bypass | `/auto-review off` or "本 session 全部放行" selected in a prompt | Skip all review for the current session; new/forked sessions default to review on |
 | Risk regex | Matches a built-in risk pattern | Ask for confirmation; block without a UI |
 | Allowlist | Matches a command prefix and basic composition checks | Execute directly without calling the review LLM |
 | LLM review | Matches neither of the previous stages | Allow if `safe: true`; otherwise ask for confirmation |
@@ -56,6 +57,8 @@ Pi loads TypeScript directly; no build step is needed. **Use only one loading me
 - The allowlist includes `ls`, `pwd`, `grep`, and `git status`, but also commands whose arguments can have side effects. An allowlist match **does not prove that a command is read-only**.
 - In `regex` mode, no review LLM is called. Commands matching neither risk patterns nor the allowlist also require confirmation.
 - In `off` mode, no review handler is registered; all checks and notifications above are disabled.
+- Every confirmation prompt offers three choices: reject, allow this command once, and bypass review for the **current session**. The session bypass skips everything above—including risk regex, LLM review, script preview, and logs—and is shown as a warning status `⚠ auto-review OFF (session)`. It never skips an agent cancellation.
+- Control it with `/auto-review [on|off|toggle|status]`; without an argument it toggles. The state is stored in a session custom entry so it survives `/reload` and resuming the same session, but is never inherited by `/new`, `/fork`, or `/clone` sessions. Enabling review again restores normal policy; if persistence fails, review stays on (fail-safe).
 - LLM verdicts are cached in extension memory by the complete command string, working directory, and inspected script fingerprint. Changed script source or cwd triggers a new review. A detected script without a complete preview is not cached; unsafe verdicts still follow the confirmation or blocking policy. The cache is not persisted and is cleared on reload.
 
 ## Configuration
@@ -169,6 +172,7 @@ It does not extract partial JSON from explanatory prose or accept multiple verdi
 | `ls -la` | The original command matches the allowlist and runs silently |
 | `sudo --version` | Matches a risk pattern and asks for confirmation; choose rejection to avoid executing it |
 | `curl -s https://example.com -o /tmp/pi-auto-review-example.html` | Goes through LLM review by default; the verdict depends on the model |
+| `/auto-review off`, then `sudo --version` | No prompt, command runs directly; `/auto-review on` or `/auto-review` restores review |
 
 An approved LLM verdict produces a notification such as `shell-review ✓ low — ...`. A command producing no stdout **does not mean it was not reviewed**.
 
@@ -212,11 +216,12 @@ Logs include **complete command strings**, LLM approval reasons, errors, and exc
 - **Review unavailable:** distinguish a provider request failure from a JSON parse failure. For `stopReason=error`, check the displayed `errorMessage` for authentication, quota/rate-limit, connectivity, or upstream failures. For `stopReason=length`, the token budget was exhausted before review completed. Only normally finished responses with malformed JSON are reported as unparseable output.
 - **Only `tool_call` events named `bash` are intercepted.** This does not cover direct user `!` or `!!` commands, `powershell`, `edit` or `write`, processes launched directly by extensions, or all MCP tools.
 - **Not a complete shell parser:** prefixes, pipelines, substitutions, arguments, scripts, and indirect invocations can cause false positives or missed risks.
+- **Session bypass:** it is an operator convenience for the current session only, not a security boundary and not inherited by other sessions. Cancelled runs remain blocked even while bypassed, and `MODE=off` cannot be overridden by the slash command.
 - **Not an operating-system permission boundary:** LLMs can misjudge commands or be influenced by prompt injection. Preview hashes only track the directly inspected script, not imports, runtime state, or file changes after review. Use containers, VMs, OS sandboxes, and least privilege when strong protection is required.
 
 ## Local tests
 
-Run `npm test` from the repository (Node.js 22.19+, no additional dependencies required). Tests cover JSON verdict parsing, provider error states, script preview scope/privacy limits, fingerprinted caching, and review hooks with mocked LLM responses. They do not call real models or execute reviewed shell commands.
+Run `npm test` from the repository (Node.js 22.19+, no additional dependencies required). Tests cover JSON verdict parsing, provider error states, script preview scope/privacy limits, fingerprinted caching, the current-session bypass command/selector, session persistence and fork isolation, and review hooks with mocked LLM responses. They do not call real models or execute reviewed shell commands.
 
 ## npm publication
 

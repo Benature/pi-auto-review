@@ -160,9 +160,11 @@ function createHarness({ responseFactory, verdict = { safe: true, risk: "low", r
   const confirmations = [];
   const events = [];
   const model = { provider: "test-provider", id: "test-model", cost: { input: 1, output: 1 } };
-  registerExtension({ on(name, handler) { handlers.set(name, handler); }, events: { emit(name, data) { events.push({ name, data }); } } });
-  const ctx = { cwd, hasUI: true, ui: {
-    notify() {}, async confirm(title, message) { confirmations.push({ title, message }); return false; },
+  registerExtension({ on(name, handler) { handlers.set(name, handler); }, registerCommand() {}, events: { emit(name, data) { events.push({ name, data }); } } });
+  const ctx = { cwd, hasUI: true,
+    sessionManager: { getSessionId() { return "preview-test-session"; }, getEntries() { return []; } },
+    ui: {
+    setStatus() {}, notify() {}, async select(title, options) { confirmations.push({ title, message: title }); return options[0]; },
   }, model, modelRegistry: {
     getAvailable() { return [model]; }, hasConfiguredAuth() { return true; },
     async complete(_model, context) {

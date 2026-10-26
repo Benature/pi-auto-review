@@ -128,15 +128,18 @@ function createHarness({ content, hasUI = true, confirm = async () => false }) {
   const model = { provider: "test-provider", id: "test-model", cost: { input: 1, output: 1 } };
   registerExtension({
     on(name, handler) { handlers.set(name, handler); },
+    registerCommand() {},
     events: { emit(name, data) { events.push({ name, data }); } },
   });
   const ctx = {
     hasUI,
+    sessionManager: { getSessionId() { return "parse-test-session"; }, getEntries() { return []; } },
     ui: {
+      setStatus() {},
       notify(message, level) { notifications.push({ message, level }); },
-      async confirm(title, message) {
-        confirmations.push({ title, message });
-        return await confirm();
+      async select(title, options) {
+        confirmations.push({ title, message: title });
+        return (await confirm()) ? options[1] : options[0];
       },
     },
     model,

@@ -47,6 +47,7 @@ Pi 直接加载 TypeScript，无需构建。**只使用一种加载方式**，�
 
 | 阶段 | 命中条件 | 行为 |
 | --- | --- | --- |
+| 本 session 放行 | `/auto-review off` 或弹窗选择“本 session 全部放行” | 当前 session 跳过全部审核；新建／fork 的 session 默认恢复审核 |
 | 危险正则 | 匹配预置风险模式 | 要求人工确认；没有 UI 时阻止 |
 | 放行白名单 | 匹配命令前缀及简易组合规则 | 直接执行，不调用审核 LLM |
 | LLM 审查 | 未命中前两层 | `safe: true` 放行；否则要求确认 |
@@ -56,6 +57,8 @@ Pi 直接加载 TypeScript，无需构建。**只使用一种加载方式**，�
 - 白名单包含 `ls`、`pwd`、`grep`、`git status` 等，也包含可能带副作用参数的命令；不能把“命中白名单”等同于“证明只读”。
 - `regex` 模式不调用审核 LLM，未命中危险规则或白名单的命令也要求确认。
 - `off` 模式不注册审核处理器，所有上述检查和通知均关闭。
+- 每个确认弹窗提供三个选项：拒绝、仅允许本次、**本 session 全部放行**。session 放行会跳过上述全部审核（含危险正则、LLM、脚本预览和日志），并在状态栏显示警告 `⚠ auto-review OFF (session)`；它不会跳过 Agent 取消信号。
+- 用 `/auto-review [on|off|toggle|status]` 控制，无参数即切换。状态存入 session 自定义条目：`/reload` 或恢复同一 session 仍生效，但 `/new`、`/fork`、`/clone` 不继承。重新开启后立即恢复审核；持久化写入失败时保持审核开启（fail-safe）。
 - LLM verdict 按完整命令、工作目录与已检查脚本的内容指纹缓存在扩展内存中。脚本内容或 cwd 改变时重新审核；检测到脚本但无法完整预览时不缓存。未通过结果仍需按策略确认；缓存不落盘，重载后清空。
 
 ## 配置
@@ -169,6 +172,7 @@ PI_AUTO_REVIEW_SCRIPT_PREVIEW=0 pi
 | `ls -la` | 原始命令命中白名单，静默放行 |
 | `sudo --version` | 命中危险正则，要求确认；可选择拒绝，不执行 |
 | `curl -s https://example.com -o /tmp/pi-auto-review-example.html` | 默认走 LLM 审查，结果取决于模型 |
+| `/auto-review off` 后执行 `sudo --version` | 不再弹窗，直接执行；`/auto-review on` 或 `/auto-review` 恢复审核 |
 
 LLM 放行时会显示类似 `shell-review ✓ low — ...` 的通知。命令没有 stdout **不代表未审核**。
 
@@ -212,11 +216,12 @@ herdr 负责展示 blocked 状态和恢复工作状态。没有监听此事件�
 - **审核不可用**：区分 provider 请求失败与 JSON 解析失败。`stopReason=error` 时查看真实 `errorMessage`，核对认证、配额／限流、连接及上游故障；`stopReason=length` 表示 token 预算耗尽、审核未完成。只有正常完成但 JSON 格式无效的响应才显示“返回无法解析”。
 - **只拦截名为 `bash` 的 `tool_call`**，不覆盖用户直接输入的 `!`／`!!` 命令、`powershell`、`edit`／`write`、扩展直接启动的进程或全部 MCP 工具。
 - **不是完整 shell parser**：前缀、管道、子命令、参数、脚本和间接调用都可能导致误判或漏判。
+- **本 session 放行**：只面向当前 session 的操作便利，不是安全边界，也不会传给其他 session。放行状态下 Agent 取消仍会阻止；`MODE=off` 全局关闭时，该命令不能反向开启。
 - **不是系统权限约束**：LLM 可能误判或受 prompt injection 影响。预览 hash 只跟踪直接检查的脚本，不跟踪 imports、运行时状态或审核后的文件变化。需要强安全保证时，应使用容器／VM／OS sandbox 和最小权限。
 
 ## 本地测试
 
-在仓库目录运行 `npm test`（Node.js 22.19+，无需安装额外依赖）。测试覆盖 JSON verdict 解析、provider 失败状态、脚本预览范围／隐私限制、指纹缓存及模拟模型的审核 hook；不会请求真实模型或执行被审核的 shell 命令。
+在仓库目录运行 `npm test`（Node.js 22.19+，无需安装额外依赖）。测试覆盖 JSON verdict 解析、provider 失败状态、脚本预览范围／隐私限制、指纹缓存、本 session 放行命令与弹窗、session 持久化与 fork 隔离，以及模拟模型的审核 hook；不会请求真实模型或执行被审核的 shell 命令。
 
 ## npm 发布
 
